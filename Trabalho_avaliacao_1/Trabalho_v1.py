@@ -10,6 +10,7 @@
 import time
 import cv2
 import numpy as np
+from pathlib import Path
 
 """ Necessidades no projeto
 Câmara estática no teto, vídeo em direto, com uma grelha 5x5 sobreposta em todas as frames.
@@ -55,10 +56,19 @@ GLOBAL_CELLS = 15      # impede que varias celula disparem ao mesmo tempo
 PERSIST_FRAMES = 3     # nº de frames seguidas com movimento para uma célula poder ser ativada 
 
 #-----------------
+#Parametros para o reset (etapa 6)
+RESET_SEGUNDOS = 10.0  # [ajustável] tempo sem qualquer movimento na imagem até o contágio ser apagado
+
+#-----------------
+#Parametros para a gravação de vídeo
+PASTA = Path(r"C:\Users\JP\Documents\Visao_computacional\Imagens_OpenCV\Videos")
+FICHEIRO = PASTA / "Trabalho_1.avi"    # cada execução do programa substitui o ficheiro anterior
+
+#-----------------
 #Cores (BGR)--> apenas é utilizado para colocar coisas á frente da janela
 BRANCO = (255, 255, 255)
 PRETO = (0, 0, 0)
-VERDE = (0, 255, 0)      # (reservado, sem uso de momento)
+VERDE = (0, 255, 0)      # píxeis com movimento na vista cinzento + deteção (tecla 2)
 VERMELHO = (0, 0, 255)
 
 #-----------------
@@ -73,15 +83,17 @@ TECLAS = """
 ---------------- Teclas ----------------
   ESC            sair
   1              mostrar/esconder FPS, celulas ativas, limiar e area minima
-  2              mostrar/esconder a janela da mascara
+  2              janela da mascara: abrir -> cinzento + detecao -> fechar
   3              mostrar/esconder as percentagens em cada celula
   4              mostrar/esconder o aviso de mudanca global de luz
-  R              reset manual do contagio (apaga todas as celulas ativas)
+  C              reset manual do contagio (apaga todas as celulas ativas)
+  R  /  T        intervalo de reset menor / maior (1 s)
   Seta baixo     mais sensivel   (limiar -5)
   Seta cima      menos sensivel  (limiar +5)
   Seta direita   area minima maior (+0.5%)
   Seta esquerda  area minima menor (-0.5%)
   (as teclas so funcionam com uma janela do programa selecionada)
+  (o video da janela principal e gravado automaticamente)
 -----------------------------------------
 """
 
@@ -89,9 +101,10 @@ fps = 0.0
 contador = 0 #contador de frames em x tempo
 T_inicio = time.time()
 dt_atualizacao_fps = 0.5    
+n_medicoes_fps = 0     #nº de medições de FPS já feitas (a primeira é descartada para a gravação)
 primeira_frame = True   #apenas variavel temporaria para o programa
 mostrar_information = True  #variavel para permitir mostrar os valores no monitor
-mostrar_mascara = False         #para ativar e desativar a mascara (janela que mostra mesmo os pixeis de movimentos)
+modo_mascara = 0                #janela da mascara: 0 = fechada, 1 = mascara (preto/branco), 2 = cinzento + deteção a verde
 mostrar_percentagens = False    #para ativar e desativar a percentagem de movimento escrita em cada célula
 mostrar_aviso_global = False     #para ativar e desativar o aviso de mudança global de luz
 limiar = Sensibilidade_Movimento
@@ -101,6 +114,11 @@ anterior = None        # frame anterior (já em cinzento e desfocada)
 ativas = np.zeros((GRID_N, GRID_N), bool)    # matrix das células ativas (em negativo) - True/False por célula
 persist = np.zeros((GRID_N, GRID_N), int)    # matrix das frames seguidas com movimento em cada célula
 semente = None                               # (linha, coluna) da primeira célula ativada
+
+intervalo_reset = RESET_SEGUNDOS             # intervalo de reset em uso (alterado pelas teclas R e T)
+ultimo_movimento = time.time()               # instante do último movimento válido em qualquer célula
+
+out = None             # objeto VideoWriter (criado logo que o FPS é medido pela primeira vez)
 
 
 
@@ -210,6 +228,13 @@ def atualizar_contagio(ativas, confirmadas, frac, elegiveis, semente):  #Recebe 
     return ativas, semente
 
 
+def limpar_contagio(ativas, persist):
+    """Apaga todas as células ativas e a persistência. Devolve a nova semente (None)."""
+    ativas[:] = False       # nenhuma célula ativa: a grelha volta toda ao normal
+    persist[:] = 0          # recomeça a contagem de frames seguidas em todas as células
+    return None             # deixa de haver semente: o próximo movimento escolhe uma nova
+
+
 
 
 #--------------------------
@@ -260,6 +285,23 @@ def desenhar_texto(img, texto, n_linha, cor=BRANCO):
     escrever(img, texto, pos, cor)
 
 
+def desenhar_texto_direita(img, texto, n_linha, cor=BRANCO):
+    """Escreve texto alinhado ao canto superior DIREITO (mesmas linhas que o desenhar_texto).
+    n_linha = 0 é a primeira linha, 1 a segunda, etc."""
+    h, w = img.shape[:2]
+    (largura, _), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 3)   # largura do texto em píxeis
+    pos = (w - largura - 10, 25 + 22 * n_linha)    # 10 píxeis de margem à direita
+    escrever(img, texto, pos, cor)
+
+
+def vista_deteccao(frame, mask):
+    """Imagem em cinzento com os píxeis de movimento pintados a verde (vista 2 da janela da máscara)."""
+    cinzento = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    vista = cv2.cvtColor(cinzento, cv2.COLOR_GRAY2BGR)   # volta a ter 3 canais, para se poder pintar a cores
+    vista[mask > 0] = VERDE                              # onde a máscara é branca (movimento), o píxel fica verde
+    return vista
+
+
 def desenhar_percentagens(img, frac, ys, xs):
     """Escreve, no canto inferior esquerdo de cada célula, a percentagem de píxeis com movimento."""
     n = frac.shape[0]
@@ -279,6 +321,8 @@ if not cap.isOpened():
     exit(1)
 
 print(TECLAS)   # mensagem inicial com as teclas disponíveis
+
+T_inicio = time.time()  # a medição do FPS começa aqui, depois de a câmara estar ligada (e não no início do programa)
 
 while(cap.isOpened()):
     # Captura frame-a-frame
@@ -312,6 +356,7 @@ while(cap.isOpened()):
         fps = contador / decorrido
         contador = 0
         T_inicio = time.time()
+        n_medicoes_fps += 1
 
 
 
@@ -330,35 +375,60 @@ while(cap.isOpened()):
 
 
     # 5. Contágio (persistência + semente + vizinhos)
+    if movimento.any():                                # qualquer movimento válido, em QUALQUER célula (elegível ou não)
+        ultimo_movimento = time.time()                 # reinicia o cronómetro do reset
     persist = np.where(movimento, persist + 1, 0)      # soma 1 onde há movimento, volta a 0 onde não há (assim conseguimos verificar onde existe movimento constante)
     confirmadas = persist >= PERSIST_FRAMES            # movimento torna-se conformado (mas não ativo) com pelo menos PERSIST_FRAMES frames seguidas (3 neste caso)
     elegiveis = celulas_elegiveis(ativas)              # função para determinar e calculada com o estado ANTERIOR, as celulas que podem contagiar (o contágio avança 1 passo por frame)
     ativas, semente = atualizar_contagio(ativas, confirmadas, frac, elegiveis, semente) #ativa finalmente a celula mais indicada para o contagio
 
 
+    # 6. Reset automático (sem movimento durante intervalo_reset segundos)
+    restante = intervalo_reset - (time.time() - ultimo_movimento)   # segundos que faltam para o reset
+    if ativas.any() and restante <= 0:                 # só faz sentido quando há células ativas
+        semente = limpar_contagio(ativas, persist)
 
-
-    # 6. Imagem de saída: negativo + grelha
+    # 7. Imagem de saída: negativo + grelha
     saida = frame.copy() #a grelha será exposta numa copia do frame, para não interromper ou afetar a deteção de movimento
     aplicar_negativo(saida, frame, ativas, ys, xs)     # células ATIVAS em negativo (antes da grelha, para não inverter as linhas)
     desenhar_grelha(saida, ys, xs)
     if mostrar_percentagens:
         desenhar_percentagens(saida, frac, ys, xs)
 
-    # 7. Texto do FPS, do limiar, da área mínima e das células ativas
+    # 8. Texto do FPS, das células ativas, da contagem do reset, do limiar e da área mínima
     if mostrar_information:
         desenhar_texto(saida, f"FPS: {fps:.1f}   Celulas ativas: {int(ativas.sum())}/{GRID_N * GRID_N}", 0)
         desenhar_texto(saida, f"Limiar (setas cima/baixo): {limiar}", 1)
         desenhar_texto(saida, f"Area minima (setas esq/dir): {area_min * 100:.1f}%", 2)
+        # informação do reset no canto superior direito
+        desenhar_texto_direita(saida, f"Reset (r/t): {intervalo_reset:.0f}s", 0)
+        if ativas.any():                               # a contagem só aparece quando há algo para apagar
+            desenhar_texto_direita(saida, f"Reset em: {max(restante, 0):.1f}s", 1)
+        escrever(saida, "ESC -> Sair", (10, h - 30))   # canto inferior esquerdo (acima das percentagens da última linha)
     if mostrar_aviso_global and mudanca_global:     # aviso de mudança global de luz (tecla 4 liga/desliga)
         escrever(saida, "Mudanca global de luz: frame ignorada", (10, h // 2), VERMELHO)
 
-    # 8. Mostrar
-    cv2.imshow("Contagion - etapa 5", saida)
-    if mostrar_mascara:
-        cv2.imshow("Mascara de movimento", mask)
+    # 9. Gravação do vídeo (grava a imagem principal, tal como aparece no ecrã)
+    if out is None and n_medicoes_fps >= 2:   # só cria o ficheiro com um FPS fiável (a 1.ª medição inclui o atraso da ligação à câmara)
+        PASTA.mkdir(parents=True, exist_ok=True)                  # cria a pasta, se ainda não existir
+        # Define o codec e cria o objeto VideoWriter [alternativa: (*'MJPG')]
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out = cv2.VideoWriter(str(FICHEIRO), fourcc, fps, (w, h))   # FPS medido e (largura, altura) da imagem de saída
+        if out.isOpened():
+            print(f"A gravar em {FICHEIRO} a {fps:.1f} fps")
+        else:
+            print("Não foi possível criar o ficheiro de vídeo:", FICHEIRO)
+    if out is not None and out.isOpened():
+        out.write(saida)
 
-    # 9. Teclado
+    # 10. Mostrar
+    cv2.imshow("Contagion - etapa 6", saida)
+    if modo_mascara == 1:
+        cv2.imshow("Mascara de movimento", mask)                       # só a máscara (preto/branco)
+    elif modo_mascara == 2:
+        cv2.imshow("Mascara de movimento", vista_deteccao(frame, mask))  # cinzento + movimento a verde
+
+    # 11. Teclado
     key = cv2.waitKeyEx(1)      # waitKeyEx devolve o código completo da tecla (necessário para as setas)
     tecla = key & 0xFF          # para as teclas normais (letras, números, ESC) basta o primeiro byte
 
@@ -374,20 +444,26 @@ while(cap.isOpened()):
         break
     elif tecla == ord('1'):                # tecla 1: mostra/esconde o FPS, o limiar e a área mínima
         mostrar_information = not mostrar_information
-    elif tecla == ord('2'):                # tecla 2: mostra/esconde a máscara
-        mostrar_mascara = not mostrar_mascara
-        if not mostrar_mascara:
+    elif tecla == ord('2'):                # tecla 2: fechada -> máscara -> cinzento + deteção -> fechada
+        modo_mascara = (modo_mascara + 1) % 3
+        if modo_mascara == 0:
             cv2.destroyWindow("Mascara de movimento")
     elif tecla == ord('3'):                # tecla 3: mostra/esconde as percentagens em cada célula
         mostrar_percentagens = not mostrar_percentagens
     elif tecla == ord('4'):                # tecla 4: mostra/esconde o aviso de mudança global de luz
         mostrar_aviso_global = not mostrar_aviso_global
-    elif tecla in (ord('r'), ord('R')):    # tecla R: reset manual do contágio
-        ativas[:] = False
-        persist[:] = 0
-        semente = None
+    elif tecla in (ord('c'), ord('C')):    # tecla C: reset manual do contágio
+        semente = limpar_contagio(ativas, persist)
+        ultimo_movimento = time.time()
+    elif tecla in (ord('r'), ord('R')):    # tecla R: intervalo de reset menor
+        intervalo_reset = max(intervalo_reset - 1, 1)
+    elif tecla in (ord('t'), ord('T')):    # tecla T: intervalo de reset maior
+        intervalo_reset = min(intervalo_reset + 1, 60)
 
 
 
+if out is not None:        # fecha o ficheiro de vídeo (sem isto o vídeo pode ficar corrompido)
+    out.release()
+    print("Gravação terminada:", FICHEIRO)
 cap.release()
 cv2.destroyAllWindows()
