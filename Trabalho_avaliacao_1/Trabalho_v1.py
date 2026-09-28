@@ -51,10 +51,14 @@ AREA_MINIMA = 0.01     # precentagem mínima da célula (0.02 = 2%) [ajustável]
 GLOBAL_CELLS = 15      # impede que varias celula disparem ao mesmo tempo
 
 #-----------------
+#Parametros para o contágio (etapa 5)
+PERSIST_FRAMES = 3     # nº de frames seguidas com movimento para uma célula poder ser ativada 
+
+#-----------------
 #Cores (BGR)--> apenas é utilizado para colocar coisas á frente da janela
 BRANCO = (255, 255, 255)
 PRETO = (0, 0, 0)
-VERDE = (0, 255, 0)
+VERDE = (0, 255, 0)      # (reservado, sem uso de momento)
 VERMELHO = (0, 0, 255)
 
 #-----------------
@@ -68,10 +72,11 @@ SETA_DIREITA  = (2555904,   65363,)
 TECLAS = """
 ---------------- Teclas ----------------
   ESC            sair
-  1              mostrar/esconder FPS, limiar e area minima
+  1              mostrar/esconder FPS, celulas ativas, limiar e area minima
   2              mostrar/esconder a janela da mascara
   3              mostrar/esconder as percentagens em cada celula
   4              mostrar/esconder o aviso de mudanca global de luz
+  R              reset manual do contagio (apaga todas as celulas ativas)
   Seta baixo     mais sensivel   (limiar -5)
   Seta cima      menos sensivel  (limiar +5)
   Seta direita   area minima maior (+0.5%)
@@ -92,6 +97,14 @@ mostrar_aviso_global = False     #para ativar e desativar o aviso de mudança gl
 limiar = Sensibilidade_Movimento
 area_min = AREA_MINIMA
 anterior = None        # frame anterior (já em cinzento e desfocada)
+
+ativas = np.zeros((GRID_N, GRID_N), bool)    # matrix das células ativas (em negativo) - True/False por célula
+persist = np.zeros((GRID_N, GRID_N), int)    # matrix das frames seguidas com movimento em cada célula
+semente = None                               # (linha, coluna) da primeira célula ativada
+
+
+
+
 
 #---------------------------
 #Funções
@@ -158,8 +171,49 @@ def decidir_movimento(frac, area_min, global_cells):    #Decide que células tê
     mudanca_global = movimento.sum() >= global_cells  # demasiadas células ao mesmo tempo -> não é uma pessoa, é a luz/exposição
     if mudanca_global:
         movimento[:] = False                        # ignora a frame inteira: nenhuma célula conta como movimento
-    return movimento, mudanca_global
+    return movimento, mudanca_global    #movimento é uma matrix 5x5 com as confirmações de movimentos
 
+
+def celulas_elegiveis(ativas): # verifica se há pelo menos uma célula ativa na janela 3×3 à volta de cada celula inativa    
+                                #devolver uma matriz 5×5 com True nas células que podem ser ativadas na próxima vez que tiverem movimento, e False nas restantes.
+
+    n = ativas.shape[0] #apenas para ler o tamanho da grelha
+    elegiveis = np.zeros_like(ativas)       # cria uma matrix n x n a zeros, contudo é utilizado este metodo, para ter as mesmas caracteristicas que a matrix ativas
+    if not ativas.any():                    # ainda sem semente: todas as células são elegíveis
+        elegiveis[:] = True     #poem as 25 celulas a true (que podem ser ativadas a qualquer segundo) apenas caso ainda não exista ainda uma semnete definida
+        return elegiveis
+    
+    for i in range(n):
+        for j in range(n):
+            if not ativas[i, j]:     # caso uma célula já esteja ativa não precisa de ser elegível, por isso salta os 3 passos seguintes passa para a proxima celula
+                #Calcula os limites da janela à volta da célula: uma linha acima até uma abaixo, e uma coluna à esquerda até uma à direita
+                i0, i1 = max(i - 1, 0), min(i + 2, n)     # linhas vizinhas (sem sair da grelha)
+                j0, j1 = max(j - 1, 0), min(j + 2, n)     # colunas vizinhas (sem sair da grelha) (é definido j+2 para incluir o limite e o valor a seguir a ele)
+                                                          #pois a posição da celula, (a:b) o b não está incluido, é o mesmo que nos limites
+                elegiveis[i, j] = ativas[i0:i1, j0:j1].any()   # analisa para ver se existe algum vizinho ativo na janela 3x3     
+    return elegiveis
+
+
+def atualizar_contagio(ativas, confirmadas, frac, elegiveis, semente):  #Recebe o estado atual e decide que células passam a estar ativas nesta frame. Os argumentos são
+    if not ativas.any():    # Ainda não há semente: a célula confirmada com mais movimento torna-se a semente
+        
+        if confirmadas.any():
+            idx = np.argmax(np.where(confirmadas, frac, -1))   # Compara as matrixes confirmadas e frac e sobrepõem uma a outra
+            semente = divmod(int(idx), ativas.shape[0])       # converte a posição em (linha, coluna), pois o np.argmax, devolve a posição seguida, linha a linha
+            ativas[semente] = True
+            #este sistema cerve como filtro também pois ele precisa da confirmação que tem muito movimento 
+            # e que esse movimento foi consistente, nos ultimos 3 frames
+    else:
+        # Caso já exista semente: só se ativam células com movimento confirmado E elegíveis (vizinhas de uma ativa)
+        ativas |= confirmadas & elegiveis
+        # O |= acrescenta células às que já estão ativas, sem apagar nenhuma
+    return ativas, semente
+
+
+
+
+#--------------------------
+#   Dezenhos das informações na janela
 
 def aplicar_negativo(saida, frame, celulas, ys, xs):
     """Nas células marcadas a True, substitui o conteúdo da saída pelo negativo da frame original (ao vivo)."""
@@ -170,7 +224,7 @@ def aplicar_negativo(saida, frame, celulas, ys, xs):
                 y0, y1 = ys[i], ys[i + 1]
                 x0, x1 = xs[j], xs[j + 1]
                 saida[y0:y1, x0:x1] = cv2.bitwise_not(frame[y0:y1, x0:x1])   # negativo = 255 - valor (slide 56)
-                # lê da frame original e escreve na saída:
+                # lê da frame original e escreve na saída: a deteção nunca vê a imagem invertida
 
 
 def desenhar_grelha(img, ys, xs):
@@ -212,6 +266,9 @@ def desenhar_percentagens(img, frac, ys, xs):
     for i in range(n):
         for j in range(n):
             escrever(img, f"{frac[i, j] * 100:.1f}%", (xs[j] + 6, ys[i + 1] - 8), BRANCO, 0.4)
+
+
+
 
 #-------------------------
 #Iniciação da camera
@@ -270,27 +327,38 @@ while(cap.isOpened()):
     frac = fracao_por_celula(mask, ys, xs, GRID_N)
     movimento, mudanca_global = decidir_movimento(frac, area_min, GLOBAL_CELLS)
 
-    # 5. Imagem de saída: negativo + grelha
+
+
+    # 5. Contágio (persistência + semente + vizinhos)
+    persist = np.where(movimento, persist + 1, 0)      # soma 1 onde há movimento, volta a 0 onde não há (assim conseguimos verificar onde existe movimento constante)
+    confirmadas = persist >= PERSIST_FRAMES            # movimento torna-se conformado (mas não ativo) com pelo menos PERSIST_FRAMES frames seguidas (3 neste caso)
+    elegiveis = celulas_elegiveis(ativas)              # função para determinar e calculada com o estado ANTERIOR, as celulas que podem contagiar (o contágio avança 1 passo por frame)
+    ativas, semente = atualizar_contagio(ativas, confirmadas, frac, elegiveis, semente) #ativa finalmente a celula mais indicada para o contagio
+
+
+
+
+    # 6. Imagem de saída: negativo + grelha
     saida = frame.copy() #a grelha será exposta numa copia do frame, para não interromper ou afetar a deteção de movimento
-    aplicar_negativo(saida, frame, movimento, ys, xs)   # células com movimento em negativo (antes da grelha, para não inverter as linhas)
+    aplicar_negativo(saida, frame, ativas, ys, xs)     # células ATIVAS em negativo (antes da grelha, para não inverter as linhas)
     desenhar_grelha(saida, ys, xs)
     if mostrar_percentagens:
         desenhar_percentagens(saida, frac, ys, xs)
 
-    # 6. Texto do FPS, do limiar e da área mínima
+    # 7. Texto do FPS, do limiar, da área mínima e das células ativas
     if mostrar_information:
-        desenhar_texto(saida, f"FPS: {fps:.1f}", 0)
+        desenhar_texto(saida, f"FPS: {fps:.1f}   Celulas ativas: {int(ativas.sum())}/{GRID_N * GRID_N}", 0)
         desenhar_texto(saida, f"Limiar (setas cima/baixo): {limiar}", 1)
         desenhar_texto(saida, f"Area minima (setas esq/dir): {area_min * 100:.1f}%", 2)
     if mostrar_aviso_global and mudanca_global:     # aviso de mudança global de luz (tecla 4 liga/desliga)
         escrever(saida, "Mudanca global de luz: frame ignorada", (10, h // 2), VERMELHO)
 
-    # 7. Mostrar
-    cv2.imshow("Contagion - etapa 4", saida)
+    # 8. Mostrar
+    cv2.imshow("Contagion - etapa 5", saida)
     if mostrar_mascara:
         cv2.imshow("Mascara de movimento", mask)
 
-    # 8. Teclado
+    # 9. Teclado
     key = cv2.waitKeyEx(1)      # waitKeyEx devolve o código completo da tecla (necessário para as setas)
     tecla = key & 0xFF          # para as teclas normais (letras, números, ESC) basta o primeiro byte
 
@@ -314,6 +382,10 @@ while(cap.isOpened()):
         mostrar_percentagens = not mostrar_percentagens
     elif tecla == ord('4'):                # tecla 4: mostra/esconde o aviso de mudança global de luz
         mostrar_aviso_global = not mostrar_aviso_global
+    elif tecla in (ord('r'), ord('R')):    # tecla R: reset manual do contágio
+        ativas[:] = False
+        persist[:] = 0
+        semente = None
 
 
 
