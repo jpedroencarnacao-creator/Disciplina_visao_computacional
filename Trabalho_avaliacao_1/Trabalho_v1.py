@@ -68,7 +68,7 @@ FICHEIRO = PASTA / "Trabalho_1.avi"    # cada execução do programa substitui o
 #Cores (BGR)--> apenas é utilizado para colocar coisas á frente da janela
 BRANCO = (255, 255, 255)
 PRETO = (0, 0, 0)
-VERDE = (0, 255, 0)      # píxeis com movimento na vista cinzento + deteção (tecla 2)
+VERDE = (0, 255, 0)      # borda das células elegíveis e píxeis com movimento na vista cinzento + deteção (tecla 2)
 VERMELHO = (0, 0, 255)
 
 #-----------------
@@ -263,10 +263,25 @@ def desenhar_grelha(img, ys, xs):
         cv2.polylines(img, [linha], False, BRANCO, 1)
 
 
+def desenhar_elegiveis(img, elegiveis, ativas, ys, xs):
+    """Borda verde nas células elegíveis (as vizinhas das ativas, onde o contágio pode avançar)."""
+    if not ativas.any():                 # sem semente, todas as células são elegíveis: não vale a pena marcar
+        return
+    n = elegiveis.shape[0]
+    m = 3   # margem em píxeis, para a borda não ficar por cima das linhas da grelha
+    for i in range(n):
+        for j in range(n):
+            if elegiveis[i, j]:
+                x0, x1 = xs[j] + m, xs[j + 1] - 1 - m
+                y0, y1 = ys[i] + m, ys[i + 1] - 1 - m
+                cantos = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.int32)
+                cv2.polylines(img, [cantos], True, VERDE, 2)   # True = polígono fechado (slide 63)
+
+
 def escrever(img, texto, pos, cor=BRANCO, escala=0.6):
     """Escreve texto na posição pos (contorno preto + texto na cor pedida, legível sobre qualquer fundo)."""
-    cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, PRETO, 3)
-    cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, cor, 1)
+    cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, PRETO, 3, cv2.LINE_AA)   # contorno preto
+    cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, cor, 1, cv2.LINE_AA)     # texto por cima (mesma fonte, escala e posição)
 
     #Argumento	            Valor	            Significado
     #imagem	                img	                onde escrever
@@ -276,6 +291,7 @@ def escrever(img, texto, pos, cor=BRANCO, escala=0.6):
     #escala	                 0.6	            o tamanho do texto
     #cor	   (0, 0, 0) / (255, 255, 255)	    preto / branco, em BGR
     #espessura	            3 / 1	            grossura do traço, em píxeis
+    #tipo de linha	        cv2.LINE_AA	        suaviza as bordas das letras (tem de ser igual nas duas chamadas)
 
 
 def desenhar_texto(img, texto, n_linha, cor=BRANCO):
@@ -315,6 +331,7 @@ def desenhar_percentagens(img, frac, ys, xs):
 #-------------------------
 #Iniciação da camera
 
+#cap = cv2.VideoCapture(0) #caso esteja no portatil
 cap = cv2.VideoCapture(CAMERA_SRC)  #captura de video
 if not cap.isOpened():
     print("Não foi possível ligar a", CAMERA_SRC)
@@ -388,10 +405,12 @@ while(cap.isOpened()):
     if ativas.any() and restante <= 0:                 # só faz sentido quando há células ativas
         semente = limpar_contagio(ativas, persist)
 
-    # 7. Imagem de saída: negativo + grelha
+    # 7. Imagem de saída: negativo + grelha + células elegíveis
     saida = frame.copy() #a grelha será exposta numa copia do frame, para não interromper ou afetar a deteção de movimento
     aplicar_negativo(saida, frame, ativas, ys, xs)     # células ATIVAS em negativo (antes da grelha, para não inverter as linhas)
     desenhar_grelha(saida, ys, xs)
+    elegiveis = celulas_elegiveis(ativas)              # recalculadas com as ativas já atualizadas nesta frame
+    desenhar_elegiveis(saida, elegiveis, ativas, ys, xs)   # borda verde nas células onde o contágio pode avançar
     if mostrar_percentagens:
         desenhar_percentagens(saida, frac, ys, xs)
 
