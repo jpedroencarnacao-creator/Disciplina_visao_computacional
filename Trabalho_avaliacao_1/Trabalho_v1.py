@@ -72,8 +72,8 @@ TECLAS = """
   2              mostrar/esconder a janela da mascara
   3              mostrar/esconder as percentagens em cada celula
   4              mostrar/esconder o aviso de mudanca global de luz
-  Seta baixo      mais sensivel   (limiar -5)
-  Seta cima     menos sensivel  (limiar +5)
+  Seta baixo     mais sensivel   (limiar -5)
+  Seta cima      menos sensivel  (limiar +5)
   Seta direita   area minima maior (+0.5%)
   Seta esquerda  area minima menor (-0.5%)
   (as teclas so funcionam com uma janela do programa selecionada)
@@ -161,6 +161,18 @@ def decidir_movimento(frac, area_min, global_cells):    #Decide que células tê
     return movimento, mudanca_global
 
 
+def aplicar_negativo(saida, frame, celulas, ys, xs):
+    """Nas células marcadas a True, substitui o conteúdo da saída pelo negativo da frame original (ao vivo)."""
+    n = celulas.shape[0]
+    for i in range(n):
+        for j in range(n):
+            if celulas[i, j]:
+                y0, y1 = ys[i], ys[i + 1]
+                x0, x1 = xs[j], xs[j + 1]
+                saida[y0:y1, x0:x1] = cv2.bitwise_not(frame[y0:y1, x0:x1])   # negativo = 255 - valor (slide 56)
+                # lê da frame original e escreve na saída:
+
+
 def desenhar_grelha(img, ys, xs):
     """Desenha as linhas interiores da grelha (sem as bordas da imagem)."""
     h, w = img.shape[:2]
@@ -170,18 +182,6 @@ def desenhar_grelha(img, ys, xs):
     for x in xs[1:-1]:
         linha = np.array([[x, 0], [x, h - 1]], np.int32)
         cv2.polylines(img, [linha], False, BRANCO, 1)
-
-
-def desenhar_celulas_movimento(img, movimento, ys, xs): #função para    dDesenhar um retângulo verde, no interior de cada células com movimento.
-    n = movimento.shape[0]
-    m = 4   # margem em píxeis, para o retângulo não ficar por cima das linhas da grelha
-    for i in range(n):
-        for j in range(n):
-            if movimento[i, j]:
-                x0, x1 = xs[j] + m, xs[j + 1] - 1 - m
-                y0, y1 = ys[i] + m, ys[i + 1] - 1 - m
-                cantos = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.int32)
-                cv2.polylines(img, [cantos], True, VERDE, 2)   # True = polígono fechado (slide 63)
 
 
 def escrever(img, texto, pos, cor=BRANCO, escala=0.6):
@@ -270,10 +270,10 @@ while(cap.isOpened()):
     frac = fracao_por_celula(mask, ys, xs, GRID_N)
     movimento, mudanca_global = decidir_movimento(frac, area_min, GLOBAL_CELLS)
 
-    # 5. Grelha 5 x 5
+    # 5. Imagem de saída: negativo + grelha
     saida = frame.copy() #a grelha será exposta numa copia do frame, para não interromper ou afetar a deteção de movimento
+    aplicar_negativo(saida, frame, movimento, ys, xs)   # células com movimento em negativo (antes da grelha, para não inverter as linhas)
     desenhar_grelha(saida, ys, xs)
-    desenhar_celulas_movimento(saida, movimento, ys, xs)
     if mostrar_percentagens:
         desenhar_percentagens(saida, frac, ys, xs)
 
@@ -286,7 +286,7 @@ while(cap.isOpened()):
         escrever(saida, "Mudanca global de luz: frame ignorada", (10, h // 2), VERMELHO)
 
     # 7. Mostrar
-    cv2.imshow("Contagion - etapa 3", saida)
+    cv2.imshow("Contagion - etapa 4", saida)
     if mostrar_mascara:
         cv2.imshow("Mascara de movimento", mask)
 
@@ -294,9 +294,9 @@ while(cap.isOpened()):
     key = cv2.waitKeyEx(1)      # waitKeyEx devolve o código completo da tecla (necessário para as setas)
     tecla = key & 0xFF          # para as teclas normais (letras, números, ESC) basta o primeiro byte
 
-    if key in SETA_BAIXO:                   # seta cima: mais sensível (limiar menor)
+    if key in SETA_BAIXO:                  # seta baixo: mais sensível (limiar menor)
         limiar = max(limiar - 5, 5)
-    elif key in SETA_CIMA:                # seta baixo: menos sensível (limiar maior)
+    elif key in SETA_CIMA:                 # seta cima: menos sensível (limiar maior)
         limiar = min(limiar + 5, 250)
     elif key in SETA_DIREITA:              # seta direita: área mínima maior (exige mais movimento dentro da célula)
         area_min = min(round(area_min + 0.005, 3), 0.5)
