@@ -44,11 +44,11 @@ GRID_N = 5             # grelha 5 x 5
 #Parametros para a deteção de movimento
 BLUR_KSIZE = 7         # tamanho do kernel do desfoque gaussiano (7×7). escolhido por tentativa, poderado o 7x7 e 5x5 pois eram os que fazim mais efeito
 MEDIAN_KSIZE = 5       # tamanho da janela do filtro de mediana aplicado à máscara (5×5).  -> serve para limpar ruido nos pixeis de movimento, isto depois do threshold
-Sensibilidade_Movimento = 25            # Valor de Sensibilidade [ajustável]: diferença mínima (0-255) para um píxel cinzento contar como movimento
+Sensibilidade_Movimento = 15            # Valor de Sensibilidade [ajustável]: diferença mínima (0-255) para um píxel cinzento contar como movimento
 
 #-----------------
 #Parametros para a decisão por célula (etapa 3)
-AREA_MINIMA = 0.01     # precentagem mínima da célula (0.02 = 2%) [ajustável]: permitie eliminar ruido dentro de cada celula
+AREA_MINIMA = 0.02     # precentagem mínima da célula (0.02 = 2%) [ajustável]: permitie eliminar ruido dentro de cada celula
 GLOBAL_CELLS = 15      # impede que varias celula disparem ao mesmo tempo
 
 #-----------------
@@ -61,7 +61,7 @@ RESET_SEGUNDOS = 10.0  # [ajustável] tempo sem qualquer movimento na imagem at�
 
 #-----------------
 #Parametros para a gravação de vídeo
-PASTA = Path(r"C:\Users\JP\Documents\Visao_computacional\Imagens_OpenCV\Videos")
+PASTA = Path(r"C:\Users\jpedr\Documents\Visao_computacional\Imagens_OpenCV\Videos")
 FICHEIRO = PASTA / "Trabalho_1.avi"    # cada execução do programa substitui o ficheiro anterior
 
 #-----------------
@@ -280,7 +280,7 @@ def desenhar_elegiveis(img, elegiveis, ativas, ys, xs):
 
 def escrever(img, texto, pos, cor=BRANCO, escala=0.6):
     """Escreve texto na posição pos (contorno preto + texto na cor pedida, legível sobre qualquer fundo)."""
-    cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, PRETO, 3, cv2.LINE_AA)   # contorno preto
+    #cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, PRETO, 3, cv2.LINE_AA)   # contorno preto
     cv2.putText(img, texto, pos, cv2.FONT_HERSHEY_SIMPLEX, escala, cor, 1, cv2.LINE_AA)     # texto por cima (mesma fonte, escala e posição)
 
     #Argumento	            Valor	            Significado
@@ -331,8 +331,8 @@ def desenhar_percentagens(img, frac, ys, xs):
 #-------------------------
 #Iniciação da camera
 
-#cap = cv2.VideoCapture(0) #caso esteja no portatil
-cap = cv2.VideoCapture(CAMERA_SRC)  #captura de video
+cap = cv2.VideoCapture(0) #caso esteja no portatil
+#cap = cv2.VideoCapture(CAMERA_SRC)  #captura de video
 if not cap.isOpened():
     print("Não foi possível ligar a", CAMERA_SRC)
     exit(1)
@@ -366,6 +366,7 @@ while(cap.isOpened()):
         primeira_frame = False
 
 
+
     # 2. FPS (frames contadas em intervalos de 0,5 s)
     contador += 1
     decorrido = time.time() - T_inicio
@@ -385,6 +386,8 @@ while(cap.isOpened()):
     mask = mascara_movimento(atual, anterior, limiar, MEDIAN_KSIZE)
     anterior = atual              # a frame atual passa a ser a anterior da próxima volta
 
+
+
     # 4. Decisão por célula (área mínima + rejeição global)
     frac = fracao_por_celula(mask, ys, xs, GRID_N)
     movimento, mudanca_global = decidir_movimento(frac, area_min, GLOBAL_CELLS)
@@ -396,14 +399,23 @@ while(cap.isOpened()):
         ultimo_movimento = time.time()                 # reinicia o cronómetro do reset
     persist = np.where(movimento, persist + 1, 0)      # soma 1 onde há movimento, volta a 0 onde não há (assim conseguimos verificar onde existe movimento constante)
     confirmadas = persist >= PERSIST_FRAMES            # movimento torna-se conformado (mas não ativo) com pelo menos PERSIST_FRAMES frames seguidas (3 neste caso)
+
+
+    
+    # Regra do contagio
     elegiveis = celulas_elegiveis(ativas)              # função para determinar e calculada com o estado ANTERIOR, as celulas que podem contagiar (o contágio avança 1 passo por frame)
     ativas, semente = atualizar_contagio(ativas, confirmadas, frac, elegiveis, semente) #ativa finalmente a celula mais indicada para o contagio
+
+
 
 
     # 6. Reset automático (sem movimento durante intervalo_reset segundos)
     restante = intervalo_reset - (time.time() - ultimo_movimento)   # segundos que faltam para o reset
     if ativas.any() and restante <= 0:                 # só faz sentido quando há células ativas
         semente = limpar_contagio(ativas, persist)
+
+
+
 
     # 7. Imagem de saída: negativo + grelha + células elegíveis
     saida = frame.copy() #a grelha será exposta numa copia do frame, para não interromper ou afetar a deteção de movimento

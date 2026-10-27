@@ -14,10 +14,11 @@ import numpy as np
 #cap = cv2.VideoCapture(0) #normalmente 0 é objeto para definir a camera default
 ip_address = "192.168.1.81"
 # IP (remote) camera
-cap = cv2.VideoCapture(f"http://{ip_address}:4747/video")
-
-PASTA = Path(r"C:\Users\JP\Documents\Visao_computacional\Imagens_OpenCV\Videos")
-FICHEIRO = PASTA / "teste.avi"
+#cap = cv2.VideoCapture(f"http://{ip_address}:4747/video")
+cap = cv2.VideoCapture(0)
+PASTA = Path(r"C:\Users\jpedr\Documents\Visao_computacional\Imagens_OpenCV\Videos")   # (estava "JP": essa pasta não existe e o vídeo não era gravado)
+FICHEIRO = PASTA / "Modelo.avi"
+PASTA.mkdir(parents=True, exist_ok=True)   # cria a pasta, se ainda não existir
 
 #cap = cv2.VideoCapture(0)
 # Check if camera opened successfully
@@ -31,13 +32,17 @@ frame_height = int(cap.get(4))
 # Define the codec and create VideoWriter object [(*'MJPG')]
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
 out = cv2.VideoWriter(str(FICHEIRO), fourcc, 20.0, (frame_width, frame_height))
+if not out.isOpened():                     # o VideoWriter falha sem dar erro: é preciso verificar
+    print("Nao foi possivel criar o ficheiro de video:", FICHEIRO)
+    exit(1)
+print("A gravar em", FICHEIRO, "- ESC para parar")
 
 
 while(cap.isOpened()):
     ret, frame = cap.read()
     if ret==True:
         #flip the image from the camera
-        frame = cv2.flip(frame,0)
+        #frame = cv2.flip(frame,0)
         # write the flipped frame
         out.write(frame)
         cv2.imshow('frame',frame)
@@ -50,3 +55,4 @@ while(cap.isOpened()):
 cap.release()
 out.release()
 cv2.destroyAllWindows()
+print("Video guardado:", FICHEIRO)
